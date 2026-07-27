@@ -1,0 +1,41 @@
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "binary"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           Int           @id @default(autoincrement())
+  email        String        @unique
+  createdAt    DateTime      @default(now())
+  firstname    String
+  googleId     String?       @unique
+  lastname     String
+  password     String
+  updatedAt    DateTime      @updatedAt
+  transactions Transaction[]
+}
+
+model Transaction {
+  id          Int      @id @default(autoincrement())
+  userId      Int
+  date        DateTime
+  description String?
+  amount      Float
+  category    String?
+  createdAt   DateTime @default(now())
+  imageHash   String?
+  csvHash     String?
+  pdfHash     String?
+  receiptUrl  String?
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([userId, imageHash])
+  @@index([userId, csvHash])
+  @@index([userId, pdfHash])
+}
