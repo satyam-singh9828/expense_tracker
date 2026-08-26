@@ -16,12 +16,25 @@ function buildAuthUser(user) {
 
 function sendAuthError(res, err, fallbackMessage = "Authentication failed") {
   const errorCode = err.code || err.errorCode;
+  const errorMessage = String(err.message || "");
 
-  console.error("Auth error:", errorCode || "UNKNOWN", err.message);
+  console.error("Auth error:", errorCode || "UNKNOWN", errorMessage);
 
   if (
+    errorMessage.includes("Environment variable not found: DATABASE_URL") ||
+    errorMessage.includes("Invalid value undefined for datasource") ||
+    errorMessage.includes("error: Environment variable not found")
+  ) {
+    return res.status(503).json({
+      message: "Database is not configured on the backend server.",
+    });
+  }
+
+  if (
+    errorCode === "P1000" ||
     errorCode === "P1001" ||
-    String(err.message || "").includes("Can't reach database server")
+    errorCode === "P1003" ||
+    errorMessage.includes("Can't reach database server")
   ) {
     return res.status(503).json({
       message: "Database is unavailable. Please try again later.",
@@ -31,6 +44,12 @@ function sendAuthError(res, err, fallbackMessage = "Authentication failed") {
   if (errorCode === "P2002") {
     return res.status(409).json({
       message: "An account with this email already exists",
+    });
+  }
+
+  if (errorCode === "P2021" || errorCode === "P2022") {
+    return res.status(503).json({
+      message: "Database schema is not ready. Please run backend migrations.",
     });
   }
 

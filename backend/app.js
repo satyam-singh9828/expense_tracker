@@ -4,6 +4,7 @@ const cors = require('cors');
 const app = express();
 const loginRouter = require('./routers/loginrouter.js') ;
 const uploadRouter = require('./routers/uploadrouter.js') ;
+const prisma = require('./config/prisma') ;
 
 const allowedOrigins = [
     'https://expenseforg.netlify.app',
@@ -37,12 +38,23 @@ app.get('/', (req, res) => {
         service: 'expense-tracker-api'
     });
 });
+app.get('/health/db', async (req, res) => {
+    try {
+        await prisma.$queryRaw`SELECT 1`;
+        res.json({ database: 'ok' });
+    } catch (err) {
+        console.error('Database health error:', err.code || 'UNKNOWN', err.message);
+        res.status(503).json({
+            database: 'unavailable',
+            code: err.code || err.errorCode || 'UNKNOWN'
+        });
+    }
+});
 app.use(loginRouter) ;
 app.use('/transactions' , uploadRouter) ;
 app.listen(PORT , () => {
     console.log(`Server is running on port ${PORT}`) ;
 }) ;
-
 
 
 
