@@ -1,7 +1,6 @@
 import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+import { apiEndpoint } from "./config/api";
 
 function getErrorList(data) {
   if (Array.isArray(data?.errorMessages)) {
@@ -27,7 +26,7 @@ const Signup = () => {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/signup`, {
+      const response = await fetch(apiEndpoint("/signup"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -2,8 +2,7 @@ import { useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useDispatch } from "react-redux";
 import { login } from "../store/slices/authslices";
-
-const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+import { apiEndpoint } from "./config/api";
 
 function getErrorMessage(data, fallback) {
   return data?.errorMessages?.[0]?.msg || data?.message || fallback;
@@ -23,7 +22,7 @@ const Login = () => {
     setLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/login`, {
+      const response = await fetch(apiEndpoint("/login"), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

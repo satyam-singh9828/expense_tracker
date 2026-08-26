@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
 import ExpenseChart from "./dailyexpense.jsx";
+import { apiEndpoint } from "./config/api";
 
 function formatMoney(value) {
   return `Rs ${Number(value || 0).toLocaleString("en-IN")}`;
@@ -41,12 +42,12 @@ function FetchTransactions({ refreshKey = 0 }) {
         setLoading(true);
         const token = localStorage.getItem("token");
         const [transactionsRes, analyticsRes] = await Promise.all([
-          axios.get("http://localhost:3000/transactions/transactions", {
+          axios.get(apiEndpoint("/transactions/transactions"), {
             headers: {
               Authorization: `Bearer ${token}`,
             },
           }),
-          axios.get("http://localhost:3000/transactions/transactions/analytics", {
+          axios.get(apiEndpoint("/transactions/transactions/analytics"), {
             headers: {
               Authorization: `Bearer ${token}`,
             },

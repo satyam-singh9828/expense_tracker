@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import FetchTransactions from "./transaction";
+import { apiEndpoint } from "./config/api";
 
 function formatMoney(value) {
   return `Rs ${Number(value || 0).toLocaleString("en-IN")}`;
@@ -49,7 +50,7 @@ const Home = () => {
     setMessage("");
 
     try {
-      const res = await axios.post("http://localhost:3000/transactions/upload", formData, {
+      const res = await axios.post(apiEndpoint("/transactions/upload"), formData, {
         headers: {
           Authorization: `Bearer ${token}`,
           "Content-Type": "multipart/form-data",
