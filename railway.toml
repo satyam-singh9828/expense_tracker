@@ -1,6 +1,6 @@
 [build]
 builder = "railpack"
-buildCommand = "npm install --prefix backend && npm run prisma:generate --prefix backend"
+buildCommand = "npm install --prefix backend && npm run prisma:migrate --prefix backend && npm run prisma:generate --prefix backend"
 
 [deploy]
 startCommand = "npm start --prefix backend"
