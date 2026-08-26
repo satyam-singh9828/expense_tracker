@@ -1,247 +1,623 @@
-const csv = require('csv-parser');
-const { Readable } = require('stream');
-const prisma = require('../config/prisma');
+const path = require("path");
 const dayjs = require("dayjs");
-const xlsx = require('xlsx');
-const pdfParse = require('pdf-parse');
-const tesseract = require('tesseract.js');
-const OpenAI = require('openai');
-const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
-function extractTransactions(lines) {
-  const transactions = [];
+const customParseFormat = require("dayjs/plugin/customParseFormat");
+const xlsx = require("xlsx");
+const pdfParse = require("pdf-parse");
+const tesseract = require("tesseract.js");
+const OpenAI = require("openai");
+const { classifyCategory, normalizeCategory } = require("./category.js");
 
-  for (let line of lines) {
+dayjs.extend(customParseFormat);
 
-    const amount = extractAmount(line);
-    if (!amount) continue; // skip non-transaction lines
+let openAiClient = null;
 
-    const date = extractDate(line);
-    const description = extractMerchant(line);
-    const category = detectCategory(line);
+function getOpenAIClient() {
+  if (!process.env.OPENAI_API_KEY) {
+    return null;
+  }
 
-    transactions.push({
-      date: date || new Date(),
-      description,
-      amount,
-      category,
+  if (!openAiClient) {
+    openAiClient = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
     });
   }
 
-  return transactions;
+  return openAiClient;
 }
 
-function extractMerchant(text) {
-  if (!text) return "Unknown";
+function parseJsonArray(text) {
+  const cleaned = String(text || "")
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
 
-  return text
-    .replace(/₹\s?\d+(\.\d+)?/g, "")   // remove money
-    .replace(/\d{1,2}:\d{2}/g, "")      // remove time
-    .replace(/[^\w\s]/g, "")            // remove symbols
-    .trim()
-    .split(" ")
-    .slice(0, 3)
-    .join(" ");
+  const firstBracket = cleaned.indexOf("[");
+  const lastBracket = cleaned.lastIndexOf("]");
+
+  if (firstBracket === -1 || lastBracket === -1) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(cleaned.slice(firstBracket, lastBracket + 1));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
 }
 
-function extractAmount(text) {
-  const match = text.match(/(\d+(\.\d{1,2})?)/g);
+function parseAmountValue(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
 
-  if (!match) return null;
+  const cleaned = String(value)
+    .replace(/,/g, "")
+    .replace(/[^\d.-]/g, "");
+  const amount = Number.parseFloat(cleaned);
 
-  return Number(match[match.length - 1]); // take last number
+  return Number.isFinite(amount) && amount !== 0 ? Math.abs(amount) : null;
 }
-function extractDate(text) {
-  const match = text.match(
-    /\d{1,2}\s?(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s?\d{4}/i
+
+function normalizeTransactionType(type) {
+  const normalized = String(type || "").trim().toLowerCase();
+
+  if (["credit", "credited", "received", "income", "refund"].includes(normalized)) {
+    return "credit";
+  }
+
+  return "debit";
+}
+
+function detectTransactionType(text) {
+  const normalized = String(text || "").toLowerCase();
+
+  if (/received from|credited|credit|refund|cashback|money received/.test(normalized)) {
+    return "credit";
+  }
+
+  return "debit";
+}
+
+function sortTransactionsByDateDesc(transactions) {
+  return [...transactions].sort(
+    (a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()
   );
-
-  if (!match) return null;
-
-  return dayjs(match[0], "DD MMM YYYY").toDate();
 }
-function detectCategory(text) {
-  text = text.toLowerCase();
 
-  if (text.match(/swiggy|zomato|restaurant|food/)) return "food";
-  if (text.match(/uber|ola|metro|bus/)) return "transport";
-  if (text.match(/amazon|flipkart|myntra/)) return "shopping";
-  if (text.match(/salary|credit|income/)) return "income";
-  if (text.match(/electricity|rent|water/)) return "bills";
+function normalizeDate(value) {
+  if (!value) {
+    return null;
+  }
 
-  return "others";
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return value;
+  }
+
+  if (typeof value === "number") {
+    const excelDate = xlsx.SSF.parse_date_code(value);
+    if (excelDate) {
+      return new Date(
+        excelDate.y,
+        excelDate.m - 1,
+        excelDate.d,
+        excelDate.H || 0,
+        excelDate.M || 0,
+        Math.floor(excelDate.S || 0)
+      );
+    }
+  }
+
+  const text = String(value)
+    .replace(/\bat\b/gi, " ")
+    .replace(/\bon\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const formats = [
+    "D MMM YYYY",
+    "DD MMM YYYY",
+    "D MMMM YYYY",
+    "DD MMMM YYYY",
+    "MMM D YYYY",
+    "MMMM D YYYY",
+    "MMM D, YYYY",
+    "MMMM D, YYYY",
+    "D MMM YYYY h:mm A",
+    "DD MMM YYYY h:mm A",
+    "MMM D YYYY h:mm A",
+    "MMM D, YYYY h:mm A",
+    "DD/MM/YYYY",
+    "D/M/YYYY",
+    "DD-MM-YYYY",
+    "D-M-YYYY",
+    "YYYY-MM-DD",
+    "YYYY/MM/DD",
+  ];
+
+  for (const format of formats) {
+    const parsed = dayjs(text, format, true);
+    if (parsed.isValid()) {
+      return parsed.toDate();
+    }
+  }
+
+  const fallback = new Date(text);
+  return Number.isNaN(fallback.getTime()) ? null : fallback;
 }
+
 function cleanOCR(text) {
-  return text
-    .replace(/[\u20B9₹]/g, "₹")
+  return String(text || "")
+    .replace(/\r/g, "\n")
+    .replace(/\u20b9|INR/gi, " Rs ")
+    .replace(/rs\./gi, " Rs ")
     .split("\n")
-    .map(l => l.trim())
+    .map((line) => line.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 }
 
+function getTextFromLines(lines) {
+  return lines.join("\n");
+}
+
+function isJunkMerchantLine(line) {
+  return /phonepe|payment|successful|success|transaction|debited|credited|utr|upi|ref|\bid\b|bank|account|date|time|paid$|^to$|^from$|help|support|powered/i.test(
+    line
+  );
+}
+
+function cleanMerchant(line) {
+  return String(line || "")
+    .replace(/^paid\s+to\s*/i, "")
+    .replace(/^to\s*:?\s*/i, "")
+    .replace(/^merchant\s*:?\s*/i, "")
+    .replace(/^receiver\s*:?\s*/i, "")
+    .replace(/\bupi\b.*$/i, "")
+    .replace(/\S+@\S+/g, "")
+    .replace(/\+?\d[\d\s-]{7,}/g, "")
+    .replace(/[^a-z0-9 &.'-]/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractPhonePeMerchant(lines) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const inlineMatch = line.match(/(?:paid|sent|transferred)\s+to\s+(.+)/i);
+
+    if (inlineMatch) {
+      const merchant = cleanMerchant(inlineMatch[1]);
+      if (merchant && !isJunkMerchantLine(merchant)) {
+        return merchant;
+      }
+    }
+
+    if (/^(paid|sent|transferred)\s+to$/i.test(line) || /^to:?$/i.test(line)) {
+      for (let next = index + 1; next < Math.min(index + 5, lines.length); next += 1) {
+        const merchant = cleanMerchant(lines[next]);
+        if (merchant && !isJunkMerchantLine(merchant)) {
+          return merchant;
+        }
+      }
+    }
+  }
+
+  const usefulLine = lines.find((line) => {
+    const cleaned = cleanMerchant(line);
+    return (
+      cleaned.length >= 3 &&
+      /[a-z]/i.test(cleaned) &&
+      !/\d/.test(cleaned) &&
+      !isJunkMerchantLine(cleaned)
+    );
+  });
+
+  return cleanMerchant(usefulLine) || "PhonePe payment";
+}
+
+function getHistoryAmountFromLine(line) {
+  if (
+    !line ||
+    extractDate(line) ||
+    /\b(paid to|sent to|received from|refund from|transferred to|debited from|credited to)\b/i.test(
+      line
+    )
+  ) {
+    return null;
+  }
+
+  const amountMatch = String(line || "").match(
+    /(?:Rs\s*)?([0-9][0-9,]*(?:\.\d{1,2})?)\s*$/i
+  );
+
+  if (!amountMatch) {
+    return null;
+  }
+
+  const rawAmount = amountMatch[1].replace(/,/g, "");
+  const looksLikeRupeePrefix =
+    !/(?:Rs|₹)/i.test(line) && rawAmount.length >= 3 && rawAmount.startsWith("3");
+  const normalizedAmount = looksLikeRupeePrefix ? rawAmount.slice(1) : rawAmount;
+
+  return {
+    amount: parseAmountValue(normalizedAmount),
+    rawAmount,
+  };
+}
+
+function cleanHistoryMerchantLine(line, rawAmount) {
+  return cleanMerchant(String(line || "").replace(new RegExp(`${rawAmount}\\s*$`), ""));
+}
+
+function isHistoryActionLine(line) {
+  return /\b(paid to|sent to|received from|refund from|transferred to)\b/i.test(line);
+}
+
+function isHistoryNoiseLine(line) {
+  return (
+    !line ||
+    /search transactions|home|alerts|history|^\W+$|^\d+\s*$|^to$|^from$|^\|/i.test(line)
+  );
+}
+
+function looksLikePhonePeHistory(lines) {
+  const text = getTextFromLines(lines);
+  const actionCount = lines.filter(isHistoryActionLine).length;
+
+  return (
+    ((/history|search transactions/i.test(text) && actionCount >= 1) ||
+      (/debited from|credited to/i.test(text) && actionCount >= 2))
+  );
+}
+
+function getHistoryBlock(lines, actionIndex) {
+  const nextActionIndex = lines.findIndex(
+    (line, index) => index > actionIndex && isHistoryActionLine(line)
+  );
+  const endIndex =
+    nextActionIndex === -1 ? Math.min(lines.length, actionIndex + 8) : nextActionIndex;
+
+  return {
+    block: lines.slice(actionIndex, endIndex),
+    endIndex,
+  };
+}
+
+function parsePhonePeHistoryBlock(block) {
+  const dateLine = block.find((line) => extractDate(line));
+  const date = extractDate(dateLine);
+
+  if (!date) {
+    return null;
+  }
+
+  let amountLineIndex = -1;
+  let amountResult = null;
+
+  for (let index = 1; index < block.length; index += 1) {
+    const line = block[index];
+
+    if (isHistoryNoiseLine(line)) {
+      continue;
+    }
+
+    const result = getHistoryAmountFromLine(line);
+
+    if (result?.amount) {
+      amountLineIndex = index;
+      amountResult = result;
+      break;
+    }
+  }
+
+  if (!amountResult) {
+    return null;
+  }
+
+  let description = cleanHistoryMerchantLine(
+    block[amountLineIndex],
+    amountResult.rawAmount
+  );
+
+  if (!description || isJunkMerchantLine(description)) {
+    for (let index = amountLineIndex - 1; index > 0; index -= 1) {
+      const candidate = cleanMerchant(block[index]);
+
+      if (candidate && !isJunkMerchantLine(candidate) && !extractDate(candidate)) {
+        description = candidate;
+        break;
+      }
+    }
+  }
+
+  if (!description || isJunkMerchantLine(description)) {
+    return null;
+  }
+
+  const rowText = block.join(" ");
+
+  return {
+    date,
+    description,
+    amount: amountResult.amount,
+    type: detectTransactionType(rowText),
+    category: classifyCategory({ description, rawText: rowText }),
+  };
+}
+
+function parsePhonePeHistory(lines) {
+  if (!looksLikePhonePeHistory(lines)) {
+    return [];
+  }
+
+  const transactions = [];
+
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!isHistoryActionLine(lines[index])) {
+      continue;
+    }
+
+    const { block, endIndex } = getHistoryBlock(lines, index);
+    const transaction = parsePhonePeHistoryBlock(block);
+
+    if (transaction) {
+      transactions.push(transaction);
+    }
+
+    index = endIndex - 1;
+  }
+
+  return sortTransactionsByDateDesc(transactions);
+}
+
+function extractAmount(text) {
+  const rupeePatterns = [
+    /(?:Rs|rs)\s*([0-9][0-9,]*(?:\.\d{1,2})?)/g,
+    /(?:paid|sent|debited|amount)\D{0,12}([0-9][0-9,]*(?:\.\d{1,2})?)/gi,
+  ];
+
+  for (const pattern of rupeePatterns) {
+    const matches = [...text.matchAll(pattern)]
+      .map((match) => parseAmountValue(match[1]))
+      .filter(Boolean);
+
+    if (matches.length) {
+      return matches[0];
+    }
+  }
+
+  return null;
+}
+
+function extractDate(text) {
+  if (!text) {
+    return null;
+  }
+
+  const datePatterns = [
+    /\b\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*,?\s+\d{4}(?:\s+(?:at\s+)?\d{1,2}:\d{2}\s*(?:AM|PM)?)?/i,
+    /\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}(?:\s+(?:at\s+)?\d{1,2}:\d{2}\s*(?:AM|PM)?)?/i,
+    /\b\d{1,2}[/-]\d{1,2}[/-]\d{4}\b/,
+    /\b\d{4}[/-]\d{1,2}[/-]\d{1,2}\b/,
+  ];
+
+  for (const pattern of datePatterns) {
+    const match = text.match(pattern);
+    const date = match ? normalizeDate(match[0]) : null;
+    if (date) {
+      return date;
+    }
+  }
+
+  return null;
+}
+
+function parsePhonePeReceipt(lines) {
+  const text = getTextFromLines(lines);
+  const looksLikePhonePe = /phonepe|transaction id|upi|paid to|debited from|payment successful/i.test(
+    text
+  );
+  const amount = extractAmount(text);
+
+  if (!looksLikePhonePe && !amount) {
+    return [];
+  }
+
+  if (!amount) {
+    return [];
+  }
+
+  const description = extractPhonePeMerchant(lines);
+  const transaction = {
+    date: extractDate(text) || new Date(),
+    description,
+    amount,
+    type: detectTransactionType(text),
+    category: classifyCategory({ description, rawText: text }),
+  };
+
+  return [transaction];
+}
+
+function parseGenericOcr(lines) {
+  const text = getTextFromLines(lines);
+  const amount = extractAmount(text);
+
+  if (!amount) {
+    return [];
+  }
+
+  const description = extractPhonePeMerchant(lines);
+
+  return [
+    {
+      date: extractDate(text) || new Date(),
+      description,
+      amount,
+      type: detectTransactionType(text),
+      category: classifyCategory({ description, rawText: text }),
+    },
+  ];
+}
+
 async function parseWithLLM(text) {
-    const prompt =  `
+  const client = getOpenAIClient();
+
+  if (!client) {
+    return [];
+  }
+
+  const prompt = `
 You are a financial transaction extractor.
 
-Convert this messy OCR text into structured JSON array.
+Convert this OCR text into a JSON array of transactions.
 
-RULES:
-- Extract: amount, description, category, type (debit/credit), date
+Rules:
+- Return only valid JSON.
+- Each item must include amount, description, category, date, type.
+- Use positive amount numbers.
+- Date must be ISO format or null.
+- type must be "debit" for money spent or "credit" for money received.
+- Category must be a common expense category.
 
-- If date not found → null
-- If category not clear → "others"
-- type = debit if money spent, credit if received
-- Return ONLY valid JSON array
-
-TEXT:
+Text:
 ${text}
 `;
-const response = await client.chat.completions.create({
-     model: "gpt-4o-mini",
+
+  const response = await client.chat.completions.create({
+    model: process.env.OPENAI_EXTRACT_MODEL || "gpt-4o-mini",
     temperature: 0,
     messages: [
       {
         role: "system",
-        content: "You extract structured financial transactions from messy text."
+        content: "Extract structured financial transactions from messy OCR text.",
       },
       {
         role: "user",
-        content: prompt
-      }
-    ]
+        content: prompt,
+      },
+    ],
   });
 
-  const content = response.choices[0].message.content;
+  return parseJsonArray(response.choices[0].message.content);
+}
 
-  return JSON.parse(content);
-}; 
+function normalizeTransaction(transaction) {
+  const amount = parseAmountValue(transaction.amount);
+  const date = normalizeDate(transaction.date) || new Date();
+  const description =
+    transaction.description ||
+    transaction.merchant ||
+    transaction.payee ||
+    transaction.name ||
+    "Unknown";
+
+  if (!amount) {
+    return null;
+  }
+
+  return {
+    date,
+    description: String(description).trim() || "Unknown",
+    amount,
+    type: normalizeTransactionType(
+      transaction.type || detectTransactionType(transaction.rawText || description)
+    ),
+    category: normalizeCategory(
+      transaction.category ||
+        classifyCategory({ description, rawText: transaction.rawText })
+    ),
+  };
+}
+
+function normalizeTransactions(transactions) {
+  return transactions.map(normalizeTransaction).filter(Boolean);
+}
 
 module.exports.parseCSV = async (file) => {
-  return new Promise((resolve, reject) => {
-    try {
-      const transactions = [];
-      const csvText = file.buffer.toString('utf-8');
-      const lines = csvText.trim().split('\n');
-      
-      if (lines.length < 2) {
-        return reject(new Error("CSV file must have at least 2 rows (header + data)"));
-      }
+  const transactions = [];
+  const csvText = file.buffer.toString("utf-8");
+  const lines = csvText.trim().split(/\r?\n/);
 
-      // Parse header row
-      const headerLine = lines[0];
-      const headers = headerLine.split(',').map(h => h.trim().toLowerCase());
-      
-      console.log("Detected headers:", headers);
-
-      // Process data rows
-      for (let i = 1; i < lines.length; i++) {
-        try {
-          const line = lines[i].trim();
-          if (!line) continue; // Skip empty lines
-
-          const values = line.split(',').map(v => v.trim());
-          
-          // Map values to headers
-          const row = {};
-          headers.forEach((header, index) => {
-            row[header] = values[index];
-          });
-
-          console.log("Parsed row:", row);
-
-          // Extract values - handle various column name formats
-          const dateVal = row.date || row.Date || row.DATE || values[0];
-          const descVal = row.description || row.Description || row.DESCRIPTION || values[1];
-          const amountVal = row.amount || row.Amount || row.AMOUNT || values[2];
-          const categoryVal = row.category || row.Category || row.CATEGORY || values[3];
-
-          if (!dateVal || !descVal || !amountVal) {
-            console.warn(`Skipping incomplete row ${i}:`, row);
-            continue;
-          }
-
-          // Parse date with validation
-          const parsedDate = new Date(dateVal);
-          if (isNaN(parsedDate.getTime())) {
-            throw new Error(`Invalid date format: ${dateVal}`);
-          }
-
-          // Parse amount with validation
-          const amount = parseFloat(amountVal);
-          if (isNaN(amount)) {
-            throw new Error(`Invalid amount: ${amountVal}`);
-          }
-
-          transactions.push({
-            userId: 1,
-            date: parsedDate,
-            description: descVal || "Unknown",
-            amount,
-            category: categoryVal || "others",
-          });
-        } catch (err) {
-          console.error(`Row ${i} parsing error:`, err.message, lines[i]);
-        }
-      }
-
-      if (transactions.length === 0) {
-        return reject(new Error("No valid transactions found in CSV"));
-      }
-
-      resolve(transactions);
-    } catch (err) {
-      reject(err);
-    }
-  });
-};
-module.exports.parseExcel = async (file) => {
-  try {
-    const workbook = xlsx.read(file.buffer, { type: "buffer" });
-
-    if (workbook.SheetNames.length === 0) {
-      throw new Error("Excel file contains no sheets");
-    }
-
-    const sheetName = workbook.SheetNames[0];
-    const sheet = workbook.Sheets[sheetName];
-
-    const data = xlsx.utils.sheet_to_json(sheet);
-
-    if (data.length === 0) {
-      throw new Error("No data found in Excel sheet");
-    }
-
-    return data.map((row, index) => {
-      try {
-        // Parse date with validation
-        const parsedDate = row.date ? new Date(row.date) : new Date();
-        if (isNaN(parsedDate.getTime())) {
-          throw new Error(`Invalid date format in row ${index + 1}: ${row.date}`);
-        }
-
-        // Parse amount with validation
-        const amount = parseFloat(row.amount);
-        if (isNaN(amount)) {
-          throw new Error(`Invalid amount in row ${index + 1}: ${row.amount}`);
-        }
-
-        return {
-          userId: 1,
-          date: parsedDate,
-          description: row.description || "Unknown",
-          amount,
-          category: row.category || "others",
-        };
-      } catch (err) {
-        console.error(`Row ${index + 1} parsing error:`, err.message, row);
-        throw err;
-      }
-    });
-  } catch (err) {
-    throw new Error(`Excel parsing failed: ${err.message}`);
+  if (lines.length < 2) {
+    throw new Error("CSV file must have at least 2 rows (header + data)");
   }
+
+  const headers = lines[0].split(",").map((header) => header.trim().toLowerCase());
+
+  for (let i = 1; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    const values = line.split(",").map((value) => value.trim());
+    const row = {};
+
+    headers.forEach((header, index) => {
+      row[header] = values[index];
+    });
+
+    const transaction = normalizeTransaction({
+      date: row.date || values[0],
+      description: row.description || row.merchant || values[1],
+      amount: row.amount || values[2],
+      category: row.category || values[3],
+      type: row.type || row.transactiontype || row["transaction type"] || values[4],
+    });
+
+    if (transaction) {
+      transactions.push(transaction);
+    }
+  }
+
+  if (!transactions.length) {
+    throw new Error("No valid transactions found in CSV");
+  }
+
+  return transactions;
 };
+
+module.exports.parseExcel = async (file) => {
+  const workbook = xlsx.read(file.buffer, { type: "buffer" });
+
+  if (workbook.SheetNames.length === 0) {
+    throw new Error("Excel file contains no sheets");
+  }
+
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const data = xlsx.utils.sheet_to_json(sheet);
+
+  if (data.length === 0) {
+    throw new Error("No data found in Excel sheet");
+  }
+
+  const transactions = normalizeTransactions(
+    data.map((row) => ({
+      date: row.date || row.Date || row.DATE,
+      description:
+        row.description ||
+        row.Description ||
+        row.DESCRIPTION ||
+        row.merchant ||
+        row.Merchant,
+      amount: row.amount || row.Amount || row.AMOUNT,
+      category: row.category || row.Category || row.CATEGORY,
+      type:
+        row.type ||
+        row.Type ||
+        row.TYPE ||
+        row.transactionType ||
+        row.TransactionType ||
+        row["Transaction Type"],
+    }))
+  );
+
+  if (!transactions.length) {
+    throw new Error("No valid transactions found in Excel");
+  }
+
+  return transactions;
+};
+
 module.exports.parsePDF = async (file) => {
   try {
     const data = await pdfParse(file.buffer);
@@ -251,66 +627,44 @@ module.exports.parsePDF = async (file) => {
       throw new Error("No text extracted from PDF");
     }
 
-    const lines = text.split("\n").filter((line) => line.trim());
+    const lines = text.split(/\r?\n/).filter((line) => line.trim());
+    const commaRows = lines
+      .map((line) => line.split(",").map((part) => part.trim()))
+      .filter((parts) => parts.length >= 3);
 
-    if (lines.length === 0) {
-      throw new Error("PDF contains no readable content");
+    const transactions = normalizeTransactions(
+      commaRows.map(([date, description, amount, category, type]) => ({
+        date,
+        description,
+        amount,
+        category,
+        type,
+      }))
+    );
+
+    if (transactions.length) {
+      return transactions;
     }
 
-    // Try to parse as CSV-like format first
-    const transactions = [];
-    let validTransactions = 0;
+    const aiTransactions = await parseWithLLM(text);
+    const normalizedAiTransactions = normalizeTransactions(aiTransactions);
 
-    for (const line of lines) {
-      try {
-        const parts = line.split(",").map((p) => p.trim());
-
-        if (parts.length >= 3) {
-          const [date, description, amount, category = "others"] = parts;
-
-          // Validate date
-          const parsedDate = new Date(date);
-          if (isNaN(parsedDate.getTime())) {
-            continue; // Skip invalid date rows
-          }
-
-          // Validate amount
-          const parsedAmount = parseFloat(amount);
-          if (isNaN(parsedAmount)) {
-            continue; // Skip invalid amount rows
-          }
-
-          transactions.push({
-            userId: 1,
-            date: parsedDate,
-            description: description || "Unknown",
-            amount: parsedAmount,
-            category: category || "others",
-          });
-
-          validTransactions++;
-        }
-      } catch (err) {
-        console.error(`PDF line parsing error:`, err.message, line);
-        continue;
-      }
+    if (normalizedAiTransactions.length) {
+      return normalizedAiTransactions;
     }
 
-    // If CSV parsing failed, use LLM to extract transactions
-    if (validTransactions === 0) {
-      console.log("CSV format parsing failed, using LLM for extraction...");
-      return await parseWithLLM(text);
-    }
-
-    return transactions;
+    throw new Error("No valid transactions found in PDF");
   } catch (err) {
-    console.error("PDF parsing error:", err.message);
-    throw new Error(`PDF parsing failed: ${err.message}`);
+    throw new Error(`PDF parsing failed: ${err.message}`, { cause: err });
   }
 };
+
 module.exports.parseImage = async (file) => {
   try {
-    const result = await tesseract.recognize(file.buffer, "eng");
+    const result = await tesseract.recognize(file.buffer, "eng", {
+      gzip: false,
+      langPath: path.resolve(__dirname, ".."),
+    });
     const text = result.data.text || "";
     const confidence = result.data.confidence || 0;
 
@@ -319,22 +673,37 @@ module.exports.parseImage = async (file) => {
     }
 
     const cleaned = cleanOCR(text);
+    const historyTransactions = parsePhonePeHistory(cleaned);
 
-    // If confidence is good and we have reasonable content, use regex extraction
-    if (cleaned.length > 3 && confidence > 50) {
-      const extracted = extractTransactions(cleaned);
-      if (extracted.length > 0) {
-        return extracted;
-      }
+    if (historyTransactions.length) {
+      return historyTransactions;
     }
 
-    // Fall back to LLM for uncertain or unstructured data
-    console.log(`OCR confidence: ${confidence}, using LLM for extraction...`);
-    return await parseWithLLM(text);
+    const receiptTransactions = parsePhonePeReceipt(cleaned);
+
+    if (receiptTransactions.length) {
+      return receiptTransactions;
+    }
+
+    const genericTransactions = parseGenericOcr(cleaned);
+
+    if (genericTransactions.length && confidence >= 35) {
+      return genericTransactions;
+    }
+
+    const aiTransactions = await parseWithLLM(text);
+    const normalizedAiTransactions = normalizeTransactions(aiTransactions);
+
+    if (normalizedAiTransactions.length) {
+      return normalizedAiTransactions;
+    }
+
+    if (genericTransactions.length) {
+      return genericTransactions;
+    }
+
+    throw new Error("Could not find amount and merchant in image");
   } catch (err) {
-    console.error("Image parsing error:", err.message);
-    throw new Error(`Image parsing failed: ${err.message}`);
+    throw new Error(`Image parsing failed: ${err.message}`, { cause: err });
   }
 };
-
-

@@ -1,77 +1,106 @@
-import React, { useRef } from "react"
-import { useNavigate } from "react-router-dom"
-import { useState} from "react"
-import { useDispatch } from "react-redux"
-import { login } from "../store/slices/authslices" 
-const API_URL = import.meta.env.VITE_API_URL;
+import { useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { useDispatch } from "react-redux";
+import { login } from "../store/slices/authslices";
+
+const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+
+function getErrorMessage(data, fallback) {
+  return data?.errorMessages?.[0]?.msg || data?.message || fallback;
+}
+
 const Login = () => {
-    const [error , seterror] = useState([]) ;
-    const password = useRef() ;
-    const email = useRef() ;
-    const navigate = useNavigate() ;
-    const dispatch = useDispatch() ;
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const password = useRef();
+  const email = useRef();
+  const navigate = useNavigate();
+  const dispatch = useDispatch();
 
-    const handleSubmit = async (event) => { 
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setError("");
+    setLoading(true);
 
-        event.preventDefault() ;
-        seterror([]) ;
-        const response = await fetch(`${API_URL}/login` , {
-            method : "POST" ,
-            headers : {
-                "Content-Type" : "application/json"
-            },
-            body : JSON.stringify({
-                email : email.current.value,
-                password : password.current.value
-            })
-        })
-        const data = await response.json() ;
-        if(response.ok){
-            localStorage.clear() ;
-            localStorage.setItem("token", data.token) ;
-            dispatch(login(data))
-            console.log(data);
-            navigate("/home") ;
-             
-        }
-        else if(response.status === 401 || response.status === 403){
-            navigate("/signup") ; 
-             seterror(data.errors) ;
+    try {
+      const response = await fetch(`${API_URL}/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: email.current.value.trim(),
+          password: password.current.value,
+        }),
+      });
+      const data = await response.json();
 
-        }
+      if (response.ok) {
+        localStorage.clear();
+        dispatch(login(data));
+        navigate("/home");
+        return;
+      }
+
+      setError(getErrorMessage(data, "Login failed. Please check your details."));
+    } catch {
+      setError("Could not connect to the server. Make sure the backend is running.");
+    } finally {
+      setLoading(false);
     }
-    return (
-        <div className="min-h-screen flex items-center justify-center bg-gray-100">
-      <div className="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
-        <h2 className="text-2xl font-bold mb-6 text-center">Log In</h2>
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-slate-100 px-4">
+      <div className="w-full max-w-md rounded-xl bg-white p-8 shadow-lg">
+        <h2 className="mb-2 text-center text-3xl font-bold text-slate-900">Log In</h2>
+        <p className="mb-6 text-center text-sm text-slate-500">
+          Open your expense dashboard
+        </p>
+
+        {error && (
+          <p className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            {error}
+          </p>
+        )}
 
         <form className="space-y-4" onSubmit={handleSubmit}>
           <input
             ref={email}
             type="email"
             placeholder="Email address"
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            required
+            className="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
           />
           <input
             ref={password}
             type="password"
             placeholder="Password"
-            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            required
+            className="w-full rounded-lg border border-slate-300 px-4 py-2.5 text-slate-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
           />
           <button
             type="submit"
-            className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 transition duration-300">
-            
-            Log In
+            disabled={loading}
+            className="w-full rounded-lg bg-blue-600 py-2.5 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {loading ? "Logging in..." : "Log In"}
           </button>
         </form>
-        <p className="text-center text-gray-500 mt-4">
+
+        <p className="mt-5 text-center text-sm text-slate-500">
           Don't have an account?{" "}
-          <a href="/signup" className="text-blue-600 hover:underline">  Sign Up</a>
+          <button
+            type="button"
+            onClick={() => navigate("/signup")}
+            className="font-semibold text-blue-600 hover:underline"
+          >
+            Sign Up
+          </button>
         </p>
       </div>
     </div>
-    ) 
-}
-export default Login ;
+  );
+};
 
+export default Login;

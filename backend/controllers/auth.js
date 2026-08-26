@@ -5,14 +5,54 @@ const { validationResult } = require('express-validator') ;
 const { signupValidator } = require('../utils/validators.js') ;
 const prisma = require('../config/prisma') ;
 
+function buildAuthUser(user) {
+  return {
+    id: user.id,
+    firstname: user.firstname,
+    lastname: user.lastname,
+    email: user.email,
+  };
+}
+
+function sendAuthError(res, err, fallbackMessage = "Authentication failed") {
+  const errorCode = err.code || err.errorCode;
+
+  console.error("Auth error:", errorCode || "UNKNOWN", err.message);
+
+  if (
+    errorCode === "P1001" ||
+    String(err.message || "").includes("Can't reach database server")
+  ) {
+    return res.status(503).json({
+      message: "Database is unavailable. Please try again later.",
+    });
+  }
+
+  if (errorCode === "P2002") {
+    return res.status(409).json({
+      message: "An account with this email already exists",
+    });
+  }
+
+  return res.status(500).json({ message: fallbackMessage });
+}
+
 const signupHandler = [
     ...signupValidator ,
-    async(req , res , next ) => {
+    async(req , res ) => {
             const { firstname , lastname , email , password  } = req.body ;
             const errors = validationResult(req) ;
          if(!errors.isEmpty()){
         return res.status(422).json({errorMessages : errors.array() }) };
         try {
+      const existingUser = await prisma.user.findUnique({ where: { email } });
+
+      if (existingUser) {
+        return res.status(409).json({
+          message: "An account with this email already exists",
+        });
+      }
+
       const hashedPassword = await bcrypt.hash(password , 10) ;
        const user = await prisma.user.create({
         data : {
@@ -22,10 +62,10 @@ const signupHandler = [
         }
     )
 
-         res.status(201).json({ status : "success" , user}) ;
+         res.status(201).json({ status : "success" , user: buildAuthUser(user)}) ;
   }
   catch(err){
-    res.status(500).json({message : err.message}) ;
+    return sendAuthError(res, err, "Could not create account") ;
   }
 }]
 
@@ -33,6 +73,12 @@ const Login = async(req , res , next ) => {
     if (req.method === "OPTIONS") {
     return next(); 
   }
+  const errors = validationResult(req);
+
+  if(!errors.isEmpty()){
+    return res.status(422).json({errorMessages : errors.array() });
+  }
+
   const {email , password } = req.body ;
   if(!email || !password){
       return res.status(400).json({message : "Email and password are required"}) ;
@@ -44,19 +90,13 @@ if(!user){
     return res.status(404).json({message : "User not found"}) ;
 }
 const isPasswordValid = await bcrypt.compare(password , user.password) ;
-console.log("Password comparison result:", isPasswordValid);
 if(!isPasswordValid){
     return res.status(401).json({message : "Invalid password"}) ;
 }
 const token = jwt.sign({userId : user.id } , process.env.JWT_SECRET_KEY  , {expiresIn : "12h"}) ;
-res.status(200).json({token  ,   user: {
-    id: user.id,
-    firstname: user.firstname,
-    lastname: user.lastname,
-    email: user.email,
-  },  }) ;
+res.status(200).json({token  , user: buildAuthUser(user) }) ;
   }catch(err){
-    res.status(500).json({message : err.message}) ;
+    return sendAuthError(res, err, "Could not login") ;
   }
 }
 

@@ -13,13 +13,17 @@ const authSlice = createSlice({
         login(state , action ) {
         state.isLoggedIn = true ;
         state.token = action.payload.token ;
-        state.userType = action.payload.userType ;
+        state.userType = action.payload.userType || null ;
         state.user = action.payload.user;
         localStorage.setItem("token", action.payload.token);
-        localStorage.setItem("userType", action.payload.userType);
+        if (action.payload.userType) {
+          localStorage.setItem("userType", action.payload.userType);
+        } else {
+          localStorage.removeItem("userType");
+        }
         localStorage.setItem("user", JSON.stringify(action.payload.user));
         },
-           logout(state , action ) {
+           logout(state ) {
                 state.isLoggedIn = false ;
                 state.token = null ;
                 state.userType = null ;
