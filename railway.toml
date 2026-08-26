@@ -1,0 +1,10 @@
+[build]
+builder = "railpack"
+buildCommand = "npm install --prefix backend && npm run prisma:generate --prefix backend"
+
+[deploy]
+startCommand = "npm start --prefix backend"
+healthcheckPath = "/"
+healthcheckTimeout = 100
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10

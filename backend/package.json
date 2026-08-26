@@ -4,6 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "node app.js",
+    "prisma:generate": "prisma generate",
     "test": "node test.js"
   },
   "keywords": [],
